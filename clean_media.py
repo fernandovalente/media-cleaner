@@ -80,16 +80,13 @@ class MediaCleaner:
 
         print(f"Found {len(files_to_process)} file(s) to process.\n")
         
-        success_count = 0
-        failure_count = 0
-        
+        results: List[bool] = []
         for file_path in files_to_process:
             out_path = self.config.media_out_dir / file_path.name
+            results.append(self._clean_file(file_path, out_path))
             
-            if self._clean_file(file_path, out_path):
-                success_count += 1
-            else:
-                failure_count += 1
+        success_count = results.count(True)
+        failure_count = results.count(False)
                 
         return success_count, failure_count
 
