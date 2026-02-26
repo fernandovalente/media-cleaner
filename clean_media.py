@@ -1,92 +1,107 @@
-#!/usr/bin/env python3
 import os
 import subprocess
 import shutil
+
 from pathlib import Path
+from dataclasses import dataclass
+from typing import List, Tuple
 
-# Configuração de diretórios
-PROJECT_DIR = Path(__file__).parent.resolve()
-MEDIA_IN_DIR = PROJECT_DIR / "mediain"
-MEDIA_OUT_DIR = PROJECT_DIR / "mediaout"
+@dataclass
+class MediaCleanerConfig:
+    project_dir: Path = Path(__file__).parent.resolve()
+    media_in_dir: Path = project_dir / "mediain"
+    media_out_dir: Path = project_dir / "mediaout"
 
+class MediaCleaner:
+    def __init__(self, config: MediaCleanerConfig = MediaCleanerConfig()):
+        self.config = config
 
-def ensure_directories():
-    """Garante que os diretórios de entrada e saída existam."""
-    MEDIA_IN_DIR.mkdir(parents=True, exist_ok=True)
-    MEDIA_OUT_DIR.mkdir(parents=True, exist_ok=True)
+    def setup(self) -> None:
+        """Ensure input and output directories exist."""
+        self.config.media_in_dir.mkdir(parents=True, exist_ok=True)
+        self.config.media_out_dir.mkdir(parents=True, exist_ok=True)
 
+    def _is_valid_file(self, filepath: Path) -> bool:
+        """Check if the provided path is a valid file to process (not hidden)."""
+        return filepath.is_file() and not filepath.name.startswith('.')
 
-def is_hidden(filepath):
-    """Verifica se o arquivo é oculto (começa com ponto)."""
-    return filepath.name.startswith('.')
+    def _get_files_to_process(self) -> List[Path]:
+        """Return a list of valid files present in the input directory."""
+        return [f for f in self.config.media_in_dir.iterdir() if self._is_valid_file(f)]
 
-
-def clean_file(input_path, output_path):
-    """
-    Usa o exiftool para remover todos os metadados do arquivo.
-    Copia o arquivo temporariamente para o output e roda o exiftool inplace,
-    para não alterar o arquivo original no mediain.
-    """
-    print(f"🔄 Processando: {input_path.name}")
-    
-    try:
-        # Copia o arquivo para o destino para trabalharmos nele
-        shutil.copy2(input_path, output_path)
+    def _clean_file(self, input_path: Path, output_path: Path) -> bool:
+        """
+        Use exiftool to strip all metadata from the file.
+        The file is copied first so the original remains untouched.
+        Returns True if successful, False otherwise.
+        """
+        print(f"Processing: {input_path.name}")
         
-        # Executa o exiftool para limpar todos (-all=) os metadados no arquivo copiado
-        # -overwrite_original garante que não seja criado um arquivo com sufixo _original na pasta de saída
-        result = subprocess.run(
-            ['exiftool', '-all=', '-overwrite_original', str(output_path)],
-            capture_output=True,
-            text=True,
-            check=True
-        )
-        
-        print(f"✅ Limpo e salvo em: mediaout/{output_path.name}")
-        return True
+        try:
+            # Copy file to destination for processing
+            shutil.copy2(input_path, output_path)
+            
+            # Execute exiftool to clean all metadata (-all=)
+            # -overwrite_original prevents creating a backup file in the output directory
+            subprocess.run(
+                ['exiftool', '-all=', '-overwrite_original', str(output_path)],
+                capture_output=True,
+                text=True,
+                check=True
+            )
+            
+            print(f"Cleaned and saved to: {output_path.parent.name}/{output_path.name}")
+            return True
 
-    except subprocess.CalledProcessError as e:
-        print(f"❌ Erro ao limpar metadados de {input_path.name}:")
-        print(e.stderr)
-        # Se falhou, remove o arquivo possivelmente quebrado/copiado do output
-        if output_path.exists():
-            output_path.unlink()
-        return False
-    except Exception as e:
-        print(f"❌ Erro inesperado ao processar {input_path.name}: {e}")
-        return False
+        except subprocess.CalledProcessError as e:
+            print(f"Error cleaning metadata from {input_path.name}:")
+            print(e.stderr)
+            # Remove potentially corrupted file if it failed
+            if output_path.exists():
+                output_path.unlink()
+            return False
+        except Exception as e:
+            print(f"Unexpected error processing {input_path.name}: {e}")
+            return False
+
+    def process_all(self) -> Tuple[int, int]:
+        """
+        Process all files in the input directory.
+        Returns a tuple of (successful_count, failed_count).
+        """
+        self.setup()
+        
+        files_to_process = self._get_files_to_process()
+        
+        if not files_to_process:
+            print(f"No files found in '{self.config.media_in_dir.name}'.")
+            print("Place your images or videos there and run the script again.")
+            return 0, 0
+
+        print(f"Found {len(files_to_process)} file(s) to process.\n")
+        
+        success_count = 0
+        failure_count = 0
+        
+        for file_path in files_to_process:
+            out_path = self.config.media_out_dir / file_path.name
+            
+            if self._clean_file(file_path, out_path):
+                success_count += 1
+            else:
+                failure_count += 1
+                
+        return success_count, failure_count
 
 
 def main():
-    ensure_directories()
+    cleaner = MediaCleaner()
+    success, failure = cleaner.process_all()
     
-    files_to_process = [f for f in MEDIA_IN_DIR.iterdir() if f.is_file() and not is_hidden(f)]
-    
-    if not files_to_process:
-        print(f"⚠️  Nenhum arquivo encontrado em '{MEDIA_IN_DIR}'.")
-        print("Coloque suas imagens ou vídeos lá e rode o script novamente.")
-        return
-
-    print(f"📦 Encontrados {len(files_to_process)} arquivo(s) para processar.\n")
-    
-    sucesso, falha = 0, 0
-    
-    for file_path in files_to_process:
-        out_path = MEDIA_OUT_DIR / file_path.name
-        
-        # Opcional: pular se já existir na saída
-        # if out_path.exists():
-        #     print(f"⏭️  Ignorando (já existe): {out_path.name}")
-        #     continue
-
-        if clean_file(file_path, out_path):
-            sucesso += 1
-        else:
-            falha += 1
-            
-    print("\n--- Resumo ---")
-    print(f"✅ Sucesso: {sucesso}")
-    print(f"❌ Falhas: {falha}")
+    if success > 0 or failure > 0:
+        print("\n--- Summary ---")
+        print(f"Success: {success}")
+        print(f"Failures: {failure}")
 
 if __name__ == "__main__":
     main()
